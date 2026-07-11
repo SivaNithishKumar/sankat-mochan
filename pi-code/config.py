@@ -95,19 +95,57 @@ def load(path: str | os.PathLike | None = None) -> Dict[str, Any]:
 
 
 def _validate(cfg: Dict[str, Any]) -> None:
-    for node in ("field", "gateway"):
+    # Which radio node(s) this board actually runs. Defaults to both for the original
+    # single-Pi bench; a split board (Pi=gateway, UNO Q=field) lists just one.
+    active = cfg.get("run", {}).get("nodes")
+    if not isinstance(active, list) or not active or not all(isinstance(n, str) for n in active):
+        raise ConfigError("run.nodes must be a non-empty list of radio names, e.g. [\"field\"]")
+    if len(set(active)) != len(active):
+        raise ConfigError(f"run.nodes has duplicates: {active}")
+
+    for node in active:
         r = cfg["radios"].get(node)
         if not r:
-            raise ConfigError(f"radios.{node} missing")
-        for key in ("cs", "rst_gpio", "dio0_gpio"):
-            if not isinstance(r.get(key), int):
-                raise ConfigError(f"radios.{node}.{key} must be an int")
-    if cfg["radios"]["field"]["cs"] == cfg["radios"]["gateway"]["cs"]:
-        raise ConfigError("the two radios must sit on different SPI chip-selects")
+            raise ConfigError(f"run.nodes lists '{node}' but there is no radios.{node} block")
+        transport = r.get("transport", "spi")
+        if transport not in ("spi", "serial", "bridge"):
+            raise ConfigError(f'radios.{node}.transport must be "spi", "serial" or "bridge"')
+        if transport == "bridge":
+            # A bridge radio is the UNO Q's own MCU, reached over the Router Bridge unix
+            # socket — no device path, no SPI chip-select or GPIO pins. socket_path is
+            # optional (defaults to /var/run/arduino-router.sock).
+            if "socket_path" in r and (
+                not isinstance(r["socket_path"], str) or not r["socket_path"]
+            ):
+                raise ConfigError(f"radios.{node}.socket_path must be a non-empty string")
+        elif transport == "serial":
+            # A serial radio (the UNO Q field modem) is reached over a device path and
+            # needs no SPI chip-select or GPIO pins.
+            if not isinstance(r.get("serial_port"), str) or not r["serial_port"]:
+                raise ConfigError(
+                    f'radios.{node}.serial_port must be set for a serial radio, '
+                    'e.g. "/dev/ttyACM0"')
+            if "serial_baud" in r and (
+                not isinstance(r["serial_baud"], int)
+                or isinstance(r["serial_baud"], bool) or r["serial_baud"] <= 0
+            ):
+                raise ConfigError(f"radios.{node}.serial_baud must be a positive int")
+        else:
+            for key in ("cs", "rst_gpio", "dio0_gpio"):
+                if not isinstance(r.get(key), int):
+                    raise ConfigError(f"radios.{node}.{key} must be an int")
 
-    pins = [cfg["radios"][n][k] for n in ("field", "gateway") for k in ("rst_gpio", "dio0_gpio")]
-    if len(set(pins)) != len(pins):
-        raise ConfigError(f"radio GPIO pins must be unique, got {pins}")
+    # These two only bite when a single board drives more than one SPI radio (both on the
+    # same bus, inches apart). A split board runs one radio, so they are vacuous. Serial
+    # radios carry no chip-select or GPIO pins, so they are exempt from both.
+    spi_nodes = [n for n in active if cfg["radios"][n].get("transport", "spi") == "spi"]
+    if len(spi_nodes) > 1:
+        cs = [cfg["radios"][n]["cs"] for n in spi_nodes]
+        if len(set(cs)) != len(cs):
+            raise ConfigError("radios on one board must sit on different SPI chip-selects")
+        pins = [cfg["radios"][n][k] for n in spi_nodes for k in ("rst_gpio", "dio0_gpio")]
+        if len(set(pins)) != len(pins):
+            raise ConfigError(f"radio GPIO pins must be unique, got {pins}")
 
     if cfg["lora"]["tx_repeats"] < 1:
         raise ConfigError("lora.tx_repeats must be >= 1")

@@ -22,8 +22,19 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-import RPi.GPIO as GPIO
-import spidev
+# spidev is only needed by a board that drives the radio directly over SPI (the Pi
+# gateway). A field board that reaches its radio through the UNO Q serial modem never
+# instantiates Radio, so it must be able to import this module WITHOUT spidev present.
+# Import softly and fail with a clear message only if a Radio is actually built.
+try:
+    import spidev  # type: ignore
+except ImportError:  # pragma: no cover - environment-dependent
+    spidev = None  # noqa: N816
+
+# GPIO access differs by board: RPi.GPIO on the Raspberry Pi, lgpio/sysfs on the UNO Q's
+# Linux side. gpio_compat exposes ONE RPi.GPIO-shaped surface so this driver is identical
+# on both tiers (CONTRACT 1). On a Pi with RPi.GPIO installed this is exactly RPi.GPIO.
+from gpio_compat import GPIO
 
 # --- LoRa-mode registers (datasheet table 41) --------------------------------
 REG_FIFO = 0x00
@@ -166,6 +177,14 @@ class Radio:
         self._rx_thread: Optional[threading.Thread] = None
         self._on_receive: Optional[Callable[[RxPacket], None]] = None
 
+        if spidev is None:
+            raise LoraError(
+                f"radio '{name}': spidev is not available, so this board cannot drive a "
+                "radio over SPI. On the Pi, spidev comes from the system packages "
+                "(the venv is created with --system-site-packages). If this is the UNO Q "
+                "field board, it should use the serial modem instead "
+                "(radios.%s.transport = \"serial\")." % name
+            )
         self._spi = spidev.SpiDev()
         self._spi.open(cfg.spi_bus, cs)
         # spidev latches SPI_NO_CS in the kernel across close()/open(): a previous
