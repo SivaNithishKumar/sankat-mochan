@@ -291,7 +291,7 @@ class BleManager:
         self._by_link: Dict[BleLink, asyncio.Task] = {}
 
     async def _purge_bluez_cache(self) -> None:
-        """Make BlueZ forget every device it merely remembers (Connected=False).
+        """Make BlueZ forget every MESH device it merely remembers (Connected=False).
 
         BlueZ's device cache outlives Android's MAC rotation by design, so a scan
         returns ghosts next to live phones: old addresses, old RSSI readings, and —
@@ -309,6 +309,7 @@ class BleManager:
             from dbus_fast.aio import MessageBus
         except ImportError:          # non-BlueZ platform: no cache to purge
             return
+        svc = self._cfg["service_uuid"].lower()
         bus = None
         removed = 0
         try:
@@ -321,6 +322,13 @@ class BleManager:
                 dev = ifaces.get("org.bluez.Device1")
                 if dev is None or dev["Connected"].value:
                     continue         # never touch a live link's device
+                uuids = {str(u).lower()
+                         for u in (dev["UUIDs"].value if "UUIDs" in dev else [])}
+                if svc not in uuids:
+                    # Not a mesh phone. Only mesh ghosts poison the roster; in a crowded
+                    # hall a scan caches ~100 bystander devices, and force-forgetting
+                    # them every cycle just treadmills bluetoothd for nothing.
+                    continue
                 res = await bus.call(Message(
                     destination="org.bluez", path=dev["Adapter"].value,
                     interface="org.bluez.Adapter1", member="RemoveDevice",
@@ -334,8 +342,9 @@ class BleManager:
             if bus is not None:
                 bus.disconnect()
         if removed:
-            self._log.info("cleared %d remembered-but-silent device(s) from the Bluetooth "
-                           "cache, so this scan only reports phones it can hear", removed)
+            self._log.info("cleared %d remembered-but-silent mesh phone entr%s from the "
+                           "Bluetooth cache, so this scan only reports phones it can hear",
+                           removed, "y" if removed == 1 else "ies")
 
     async def discover(self) -> tuple:
         """Scan once. Returns (phones, stale_addresses).
