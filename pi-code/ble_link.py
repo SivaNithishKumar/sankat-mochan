@@ -41,7 +41,13 @@ GATT_OP_TIMEOUT_S = 10.0
 # lock (BlueZ won't scan and connect at once), so a long timeout on a phone that has
 # rotated away starves discovery for everyone. A live phone answers in a second or
 # two; this ceiling only bites on a phone that is genuinely gone.
-CONNECT_TIMEOUT_S = 10.0
+CONNECT_TIMEOUT_S = 6.0
+
+
+class _ConnectTimeout(Exception):
+    """connect() hit CONNECT_TIMEOUT_S. Distinguished from a subscribe timeout because
+    bleak raises the same asyncio.TimeoutError for both, and reporting a dead dial as
+    'never answered the subscribe' sends whoever reads the log after the wrong bug."""
 
 # Below this, a scan entry is a BlueZ cache ghost, not a phone we can hear. BlueZ
 # reports devices it merely REMEMBERS alongside ones that are advertising right now,
@@ -490,9 +496,12 @@ class BleManager:
                 target = link._device or link.address
                 # Only the handshake holds the adapter lock; a connected session
                 # doesn't block scans or the other links' reconnects.
-                async with self._adapter_lock:
-                    client = BleakClient(target, timeout=CONNECT_TIMEOUT_S)
-                    await client.connect()
+                try:
+                    async with self._adapter_lock:
+                        client = BleakClient(target, timeout=CONNECT_TIMEOUT_S)
+                        await client.connect()
+                except asyncio.TimeoutError as e:
+                    raise _ConnectTimeout() from e
                 attempt = 0
                 if client.services.get_characteristic(link._char) is None:
                     raise RuntimeError(
@@ -531,6 +540,16 @@ class BleManager:
                     except Exception:
                         pass
                 raise
+            except _ConnectTimeout:
+                self._log.warning(
+                    "[%s] %s did not answer the connection attempt within %.0fs — this "
+                    "Bluetooth address has probably just rotated away; the next scan "
+                    "will find the phone's new one", link._node, link.address,
+                    CONNECT_TIMEOUT_S)
+                # Redialling the same dead address won't help — only a scan retarget
+                # will. Back off to the slowest rung so this loop stops holding the
+                # adapter lock hostage for the links behind it.
+                attempt = max(attempt, len(backoff) - 1)
             except asyncio.TimeoutError:
                 self._log.warning(
                     "[%s] %s connected but never answered the subscribe within %.0fs — "
