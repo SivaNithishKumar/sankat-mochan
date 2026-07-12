@@ -41,7 +41,10 @@ GATT_OP_TIMEOUT_S = 10.0
 # lock (BlueZ won't scan and connect at once), so a long timeout on a phone that has
 # rotated away starves discovery for everyone. A live phone answers in a second or
 # two; this ceiling only bites on a phone that is genuinely gone.
-CONNECT_TIMEOUT_S = 6.0
+# 15s, not less: bleak's connect timeout covers service RESOLUTION too, and these
+# phones expose 50+ system characteristics — a cold resolution (no BlueZ GATT cache)
+# measures 2-10s. A 6s ceiling turned slow-but-alive dials into failures.
+CONNECT_TIMEOUT_S = 15.0
 
 
 class _ConnectTimeout(Exception):
@@ -324,10 +327,16 @@ class BleManager:
                 destination="org.bluez", path="/",
                 interface="org.freedesktop.DBus.ObjectManager",
                 member="GetManagedObjects"))
+            # Addresses our links are actively dialling: purging one of these deletes
+            # BlueZ's cached GATT table for it, forcing the next connect into a cold
+            # 50+-characteristic re-discovery that can blow the connect timeout.
+            dialling = {l.address.upper() for l in self._by_link}
             for path, ifaces in reply.body[0].items():
                 dev = ifaces.get("org.bluez.Device1")
                 if dev is None or dev["Connected"].value:
                     continue         # never touch a live link's device
+                if str(dev["Address"].value).upper() in dialling:
+                    continue         # keep the GATT cache warm for our own reconnects
                 uuids = {str(u).lower()
                          for u in (dev["UUIDs"].value if "UUIDs" in dev else [])}
                 if svc not in uuids:
