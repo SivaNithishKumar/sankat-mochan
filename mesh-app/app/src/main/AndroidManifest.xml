@@ -43,6 +43,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- connectedDevice: MeshKeepAliveService holds the process out of Android's app freezer
+         while the BLE mesh is on — a frozen app keeps advertising but can never answer the
+         gateway's subscribe, silently killing all SOS traffic. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!--
       SECURITY-SENSITIVE (CLAUDE.md #6): network access.
@@ -81,6 +85,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Keeps the process un-frozen while the mesh is on (see class docs). -->
+        <service
+            android:name=".MeshKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- Flip-to-SOS detector. specialUse: a novel foreground use (emergency flip-gesture
              trigger) not covered by a standard FGS type; the subtype string documents why. -->

@@ -295,6 +295,10 @@ class MeshViewModel(app: Application) : AndroidViewModel(app) {
         }
         this.role = role
         service.start(role)
+        // Without this foreground service Android freezes the app minutes after the screen
+        // locks; the frozen GATT server then never answers the gateway's subscribe and the
+        // phone silently drops out of the mesh while still advertising.
+        MeshKeepAliveService.start(getApplication())
         // The victim's fix travels in the SOS; the responder's fix is what turns a pair
         // of coordinates into "420 m northeast of you". A relay needs neither, so it
         // does not pay for a running GNSS receiver.
@@ -331,5 +335,6 @@ class MeshViewModel(app: Application) : AndroidViewModel(app) {
         recorder.cancel()
         stopLocation()
         service.stop()
+        MeshKeepAliveService.stop(getApplication())
     }
 }
